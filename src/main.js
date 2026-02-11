@@ -30,8 +30,14 @@ document.body.appendChild(canvas);
 
 let tmr = null;
 let eventTmr = null;
-let autoStopTimer = null;
 let resetIsSupported = false;
+let isLcdPad = false;
+
+// LCD constants
+const LCD_W = 240, LCD_H = 64;
+const SIG_Y = 22, SIG_H = 40;
+const HOTSPOT_CLEAR = 0, HOTSPOT_OK = 1;
+const BMP_BASE = 'http://www.sigplusweb.com/SigWeb/';
 
 // --- Helpers ---
 function isOlderVersion(oldVer, newVer) {
@@ -46,14 +52,9 @@ function isOlderVersion(oldVer, newVer) {
   return false;
 }
 
-function setStatus(connected) {
-  if (connected) {
-    statusEl.textContent = 'SigWeb Detected';
-    statusEl.className = 'status connected';
-  } else {
-    statusEl.textContent = 'SigWeb Not Detected';
-    statusEl.className = 'status disconnected';
-  }
+function setStatus(text, connected) {
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
 }
 
 // --- Pad Detection ---
@@ -61,20 +62,60 @@ function detectPad() {
   try {
     if (typeof IsSigWebInstalled === 'function' && IsSigWebInstalled()) {
       resetIsSupported = !isOlderVersion('1.6.4.0', GetSigWebVersion());
-      setStatus(true);
-      btnSign.disabled = false;
+
+      SetTabletState(1);
+      const model = TabletModelNumber();
+      SetTabletState(0);
+      isLcdPad = [11, 12, 15].includes(model);
+
+      if (isLcdPad) {
+        setStatus('SigWeb Detected (LCD pad)', true);
+        btnSign.disabled = false;
+      } else {
+        setStatus('LCD pad required', false);
+        btnSign.disabled = true;
+      }
     } else {
-      setStatus(false);
+      setStatus('SigWeb Not Detected', false);
       btnSign.disabled = true;
     }
   } catch {
-    setStatus(false);
+    setStatus('SigWeb Not Detected', false);
     btnSign.disabled = true;
   }
 }
 
+// --- LCD Functions ---
+function setupLcdSigningScreen() {
+  LcdRefresh(0, 0, 0, LCD_W, LCD_H);
+  LCDSendGraphicUrl(1, 2, 15, 4, BMP_BASE + 'CLEAR.bmp');
+  LCDSendGraphicUrl(1, 2, 207, 4, BMP_BASE + 'OK.bmp');
+  LCDSendGraphicUrl(1, 2, 0, 20, BMP_BASE + 'Sign.bmp');
+  LcdRefresh(2, 0, 0, LCD_W, LCD_H);
+  ClearTablet();
+  KeyPadClearHotSpotList();
+  KeyPadAddHotSpot(HOTSPOT_CLEAR, 1, 10, 5, 53, 17);
+  KeyPadAddHotSpot(HOTSPOT_OK, 1, 197, 5, 19, 17);
+  LCDSetWindow(2, SIG_Y, LCD_W - 4, SIG_H);
+  SetSigWindow(1, 0, SIG_Y, LCD_W, SIG_H);
+  SetLCDCaptureMode(2);
+}
+
+function cleanupLcd() {
+  LcdRefresh(0, 0, 0, LCD_W, LCD_H);
+  LCDSetWindow(0, 0, LCD_W, LCD_H);
+  SetSigWindow(1, 0, 0, LCD_W, LCD_H);
+  KeyPadClearHotSpotList();
+  SetLCDCaptureMode(1);
+}
+
 // --- Signing Flow ---
 function startSigning() {
+  if (!isLcdPad) {
+    setStatus('LCD pad required', false);
+    return;
+  }
+
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -82,30 +123,32 @@ function startSigning() {
   SetDisplayYSize(100);
   SetImageXSize(500);
   SetImageYSize(100);
-  SetJustifyMode(5);
+  SetJustifyMode(0);
   ClearTablet();
 
   tmr = SetTabletState(1, ctx, 50);
   eventTmr = setInterval(SigWebEvent, 20);
 
+  setupLcdSigningScreen();
+
   btnSign.disabled = true;
   btnClear.disabled = false;
   outputSection.style.display = 'none';
+  setStatus('Sign on the pad, then press OK', true);
 }
 
 function finishSigning() {
   clearInterval(eventTmr);
   eventTmr = null;
 
-  if (typeof NumberOfTabletPoints === 'function' && NumberOfTabletPoints() > 0) {
-    SetTabletState(0, tmr);
-    SetImageXSize(500);
-    SetImageYSize(100);
-    GetSigImageB64(onImageReady);
-  } else {
-    SetTabletState(0, tmr);
-    btnSign.disabled = false;
-  }
+  LcdRefresh(0, 0, 0, LCD_W, LCD_H);
+  LCDWriteString(0, 2, 20, 25, '9pt Arial', 15, 'Signature captured.');
+  cleanupLcd();
+  SetTabletState(0, tmr);
+
+  SetImageXSize(500);
+  SetImageYSize(100);
+  GetSigImageB64(onImageReady);
 }
 
 function onImageReady(base64Str) {
@@ -113,29 +156,43 @@ function onImageReady(base64Str) {
   base64Output.value = base64Str;
   outputSection.style.display = 'block';
   btnSign.disabled = false;
+  btnClear.disabled = true;
+  setStatus('Signature captured', true);
 }
 
 // Must be on window for SigWeb callback
 window.onImageReady = onImageReady;
 
-// Pen events for auto-detect completion
-window.onSigPenDown = function () {
-  clearTimeout(autoStopTimer);
-};
-
+// Pen events — hotspot-based for LCD
 window.onSigPenUp = function () {
-  clearTimeout(autoStopTimer);
-  autoStopTimer = setTimeout(finishSigning, 2000);
+  if (KeyPadQueryHotSpot(HOTSPOT_CLEAR) > 0) {
+    ClearSigWindow(1);
+    LcdRefresh(1, 10, 0, 53, 17);
+    LcdRefresh(2, 0, 0, LCD_W, LCD_H);
+    ClearTablet();
+    return;
+  }
+  if (KeyPadQueryHotSpot(HOTSPOT_OK) > 0) {
+    ClearSigWindow(1);
+    if (NumberOfTabletPoints() > 0) {
+      finishSigning();
+    } else {
+      LcdRefresh(0, 0, 0, LCD_W, LCD_H);
+      LCDWriteString(0, 2, 20, 25, '9pt Arial', 15, 'Please sign first.');
+      setTimeout(setupLcdSigningScreen, 1500);
+    }
+  }
 };
+window.onSigPenDown = null;
 
 // --- Clear ---
 function clearSignature() {
-  clearTimeout(autoStopTimer);
   if (eventTmr) {
     clearInterval(eventTmr);
     eventTmr = null;
   }
   ClearTablet();
+  try { cleanupLcd(); } catch { /* pad may not be active */ }
   if (tmr) {
     SetTabletState(0, tmr);
     tmr = null;
@@ -145,6 +202,7 @@ function clearSignature() {
   base64Output.value = '';
   btnSign.disabled = false;
   btnClear.disabled = true;
+  setStatus('SigWeb Detected (LCD pad)', true);
 }
 
 // --- Event Listeners ---
@@ -154,6 +212,7 @@ btnClear.addEventListener('click', clearSignature);
 // --- Page Dismissal ---
 window.addEventListener('beforeunload', () => {
   try {
+    cleanupLcd();
     if (resetIsSupported && typeof Reset === 'function') {
       Reset();
     } else {
