@@ -32,10 +32,12 @@ let tmr = null;
 let eventTmr = null;
 let resetIsSupported = false;
 let isLcdPad = false;
+let scrn = 0;
 
 // LCD constants
 const LCD_W = 240, LCD_H = 64;
 const SIG_Y = 22, SIG_H = 40;
+const HOTSPOT_CONTINUE = 0;
 const HOTSPOT_CLEAR = 2, HOTSPOT_OK = 3;
 const BMP_BASE = 'http://www.sigplusweb.com/SigWeb/';
 
@@ -86,77 +88,137 @@ function detectPad() {
   }
 }
 
-// --- LCD Functions ---
-function setupLcdSigningScreen() {
-  LcdRefresh(0, 0, 0, LCD_W, LCD_H);
-  LCDSendGraphicUrl(1, 2, 15, 4, BMP_BASE + 'CLEAR.bmp');
-  LCDSendGraphicUrl(1, 2, 207, 4, BMP_BASE + 'OK.bmp');
-  LCDSendGraphicUrl(1, 2, 0, 20, BMP_BASE + 'Sign.bmp');
-  LcdRefresh(2, 0, 0, LCD_W, LCD_H);
-  ClearTablet();
-  KeyPadClearHotSpotList();
-  KeyPadAddHotSpot(HOTSPOT_CLEAR, 1, 10, 5, 53, 17);
-  KeyPadAddHotSpot(HOTSPOT_OK, 1, 197, 5, 19, 17);
-  LCDSetWindow(2, SIG_Y, LCD_W - 4, SIG_H);
-  SetSigWindow(1, 0, SIG_Y, LCD_W, SIG_H);
-  SetLCDCaptureMode(2);
-}
-
-function cleanupLcd() {
+// --- LCD cleanup (matches demo endDemo) ---
+function resetTablet() {
   LcdRefresh(0, 0, 0, LCD_W, LCD_H);
   LCDSetWindow(0, 0, LCD_W, LCD_H);
   SetSigWindow(1, 0, 0, LCD_W, LCD_H);
   KeyPadClearHotSpotList();
   SetLCDCaptureMode(1);
+  SetTabletState(0, tmr);
+  ClearTablet();
 }
 
 // --- Signing Flow ---
+// Replicates demo startTablet() exactly:
+// 1. Enable tablet + polling
+// 2. Load graphics to layer 1
+// 3. Show "Continue" on layer 0 with hotspot
+// 4. Set 1x1 windows (signing DISABLED until Continue is pressed)
+// 5. Graphics load in background while user sees Continue
 function startSigning() {
   if (!isLcdPad) {
     setStatus('LCD pad required', false);
     return;
   }
 
-  const ctx = canvas.getContext('2d');
+  var ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  // 1. Start tablet + event polling
+  eventTmr = setInterval(SigWebEvent, 20);
+  tmr = SetTabletState(1, ctx, 50) || tmr;
+
+  // 2. Initial LCD setup
+  SetLCDCaptureMode(2);
+  LcdRefresh(0, 0, 0, LCD_W, LCD_H);
+  SetJustifyMode(0);
+  KeyPadClearHotSpotList();
+  ClearSigWindow(1);
   SetDisplayXSize(500);
   SetDisplayYSize(100);
   SetImageXSize(500);
   SetImageYSize(100);
-  SetJustifyMode(0);
+  SetLCDCaptureMode(2);
+
+  // 3. Load button graphics to layer 1 (persist entire session)
+  LCDSendGraphicUrl(1, 2, 0, 20, BMP_BASE + 'Sign.bmp');
+  LCDSendGraphicUrl(1, 2, 207, 4, BMP_BASE + 'OK.bmp');
+  LCDSendGraphicUrl(1, 2, 15, 4, BMP_BASE + 'CLEAR.bmp');
+
+  // 4. Continue screen on layer 0
+  LCDWriteString(0, 2, 25, 15, '9pt Arial', 15, 'Please press Continue to sign.');
+  LCDWriteString(0, 2, 15, 45, '9pt Arial', 15, 'Continue');
+  KeyPadAddHotSpot(HOTSPOT_CONTINUE, 1, 12, 40, 40, 15);
+
+  // 5. Disable signing (1x1 windows) while graphics load
   ClearTablet();
+  LCDSetWindow(0, 0, 1, 1);
+  SetSigWindow(1, 0, 0, 1, 1);
+  SetLCDCaptureMode(2);
 
-  tmr = SetTabletState(1, ctx, 50);
-  eventTmr = setInterval(SigWebEvent, 20);
+  scrn = 1;
 
-  setupLcdSigningScreen();
+  window.onSigPenUp = function () { processPenUp(); };
+  SetLCDCaptureMode(2);
 
   btnSign.disabled = true;
   btnClear.disabled = false;
   outputSection.style.display = 'none';
-  setStatus('Sign on the pad, then press OK', true);
+  setStatus('Press Continue on the pad', true);
 }
 
-function finishSigning() {
-  clearInterval(eventTmr);
-  eventTmr = null;
+// Handles all pad button presses via hotspot detection
+function processPenUp() {
+  // --- CONTINUE (scrn 1 → scrn 2) ---
+  if (KeyPadQueryHotSpot(HOTSPOT_CONTINUE) > 0) {
+    ClearSigWindow(1);
+    LcdRefresh(1, 16, 45, 50, 15);
+    if (scrn == 1) {
+      // Activate signing screen — graphics already loaded on layer 1
+      LcdRefresh(2, 0, 0, LCD_W, LCD_H);
+      ClearTablet();
+      KeyPadClearHotSpotList();
+      KeyPadAddHotSpot(HOTSPOT_CLEAR, 1, 10, 5, 53, 17);
+      KeyPadAddHotSpot(HOTSPOT_OK, 1, 197, 5, 19, 17);
+      LCDSetWindow(2, SIG_Y, LCD_W - 4, SIG_H);
+      SetSigWindow(1, 0, SIG_Y, LCD_W, SIG_H);
+      scrn = 2;
+      setStatus('Sign on the pad, then press OK', true);
+    }
+    SetLCDCaptureMode(2);
+  }
 
-  // Show message on LCD
-  LcdRefresh(0, 0, 0, LCD_W, LCD_H);
-  LCDWriteString(0, 2, 20, 25, '9pt Arial', 15, 'Signature captured.');
+  // --- CLEAR ---
+  if (KeyPadQueryHotSpot(HOTSPOT_CLEAR) > 0) {
+    ClearSigWindow(1);
+    LcdRefresh(1, 10, 0, 53, 17);
+    LcdRefresh(2, 0, 0, LCD_W, LCD_H);
+    ClearTablet();
+  }
 
-  // Extract image WHILE tablet is still active
-  SetImageXSize(500);
-  SetImageYSize(100);
-  GetSigImageB64(onImageReady);
+  // --- OK ---
+  if (KeyPadQueryHotSpot(HOTSPOT_OK) > 0) {
+    ClearSigWindow(1);
+    LcdRefresh(1, 210, 3, 14, 14);
+    if (NumberOfTabletPoints() > 0) {
+      // Signature exists — capture it
+      LcdRefresh(0, 0, 0, LCD_W, LCD_H);
+      LCDWriteString(0, 2, 35, 25, '9pt Arial', 15, 'Signature capture complete.');
+      clearInterval(eventTmr);
+      eventTmr = null;
+      // Extract image while tablet still active
+      SetImageXSize(500);
+      SetImageYSize(100);
+      GetSigImageB64(onImageReady);
+    } else {
+      // No signature — show "please sign" then return to signing
+      LcdRefresh(0, 0, 0, LCD_W, LCD_H);
+      LCDSendGraphicUrl(0, 2, 4, 20, BMP_BASE + 'please.bmp');
+      ClearTablet();
+      LcdRefresh(2, 0, 0, LCD_W, LCD_H);
+      SetLCDCaptureMode(2);
+    }
+  }
+
+  ClearSigWindow(1);
 }
 
 function onImageReady(base64Str) {
   // Cleanup AFTER image is captured
-  cleanupLcd();
-  SetTabletState(0, tmr);
+  resetTablet();
   tmr = null;
+  scrn = 0;
 
   sigImage.src = 'data:image/png;base64,' + base64Str;
   base64Output.value = base64Str;
@@ -169,42 +231,15 @@ function onImageReady(base64Str) {
 // Must be on window for SigWeb callback
 window.onImageReady = onImageReady;
 
-// Pen events — hotspot-based for LCD
-window.onSigPenUp = function () {
-  if (KeyPadQueryHotSpot(HOTSPOT_CLEAR) > 0) {
-    ClearSigWindow(1);
-    LcdRefresh(1, 10, 0, 53, 17);
-    LcdRefresh(2, 0, 0, LCD_W, LCD_H);
-    ClearTablet();
-    return;
-  }
-  if (KeyPadQueryHotSpot(HOTSPOT_OK) > 0) {
-    ClearSigWindow(1);
-    LcdRefresh(1, 210, 3, 14, 14);
-    if (NumberOfTabletPoints() > 0) {
-      finishSigning();
-    } else {
-      LcdRefresh(0, 0, 0, LCD_W, LCD_H);
-      LCDSendGraphicUrl(0, 2, 4, 20, BMP_BASE + 'please.bmp');
-      ClearTablet();
-      setTimeout(setupLcdSigningScreen, 1500);
-    }
-  }
-};
-window.onSigPenDown = null;
-
-// --- Clear ---
+// --- Clear (web button) ---
 function clearSignature() {
   if (eventTmr) {
     clearInterval(eventTmr);
     eventTmr = null;
   }
-  ClearTablet();
-  try { cleanupLcd(); } catch { /* pad may not be active */ }
-  if (tmr) {
-    SetTabletState(0, tmr);
-    tmr = null;
-  }
+  try { resetTablet(); } catch { /* pad may not be active */ }
+  tmr = null;
+  scrn = 0;
   outputSection.style.display = 'none';
   sigImage.src = '';
   base64Output.value = '';
@@ -218,15 +253,12 @@ btnSign.addEventListener('click', startSigning);
 btnClear.addEventListener('click', clearSignature);
 
 // --- Page Dismissal ---
-// Match demo close(): Reset() handles full cleanup including LCD
 window.addEventListener('beforeunload', () => {
   try {
     if (resetIsSupported && typeof Reset === 'function') {
       Reset();
     } else {
-      cleanupLcd();
-      if (tmr) SetTabletState(0, tmr);
-      ClearTablet();
+      resetTablet();
     }
     clearInterval(tmr);
     clearInterval(eventTmr);
