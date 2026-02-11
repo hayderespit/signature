@@ -36,7 +36,7 @@ let isLcdPad = false;
 // LCD constants
 const LCD_W = 240, LCD_H = 64;
 const SIG_Y = 22, SIG_H = 40;
-const HOTSPOT_CLEAR = 0, HOTSPOT_OK = 1;
+const HOTSPOT_CLEAR = 2, HOTSPOT_OK = 3;
 const BMP_BASE = 'http://www.sigplusweb.com/SigWeb/';
 
 // --- Helpers ---
@@ -64,15 +64,16 @@ function detectPad() {
       resetIsSupported = !isOlderVersion('1.6.4.0', GetSigWebVersion());
 
       SetTabletState(1);
-      const model = TabletModelNumber();
+      const model = parseInt(TabletModelNumber(), 10);
       SetTabletState(0);
+      console.log('SigWeb tablet model:', model);
       isLcdPad = [11, 12, 15].includes(model);
 
       if (isLcdPad) {
         setStatus('SigWeb Detected (LCD pad)', true);
         btnSign.disabled = false;
       } else {
-        setStatus('LCD pad required', false);
+        setStatus(`LCD pad required (model ${model} detected)`, false);
         btnSign.disabled = true;
       }
     } else {
@@ -174,11 +175,13 @@ window.onSigPenUp = function () {
   }
   if (KeyPadQueryHotSpot(HOTSPOT_OK) > 0) {
     ClearSigWindow(1);
+    LcdRefresh(1, 210, 3, 14, 14);
     if (NumberOfTabletPoints() > 0) {
       finishSigning();
     } else {
       LcdRefresh(0, 0, 0, LCD_W, LCD_H);
-      LCDWriteString(0, 2, 20, 25, '9pt Arial', 15, 'Please sign first.');
+      LCDSendGraphicUrl(0, 2, 4, 20, BMP_BASE + 'please.bmp');
+      ClearTablet();
       setTimeout(setupLcdSigningScreen, 1500);
     }
   }
