@@ -64,16 +64,16 @@ function detectPad() {
       resetIsSupported = !isOlderVersion('1.6.4.0', GetSigWebVersion());
 
       SetTabletState(1);
-      const model = parseInt(TabletModelNumber(), 10);
+      var retmod = TabletModelNumber();
       SetTabletState(0);
-      console.log('SigWeb tablet model:', model);
-      isLcdPad = [11, 12, 15].includes(model);
+      console.log('SigWeb tablet model (raw):', retmod, typeof retmod);
+      isLcdPad = (retmod == 11 || retmod == 12 || retmod == 15);
 
       if (isLcdPad) {
         setStatus('SigWeb Detected (LCD pad)', true);
         btnSign.disabled = false;
       } else {
-        setStatus(`LCD pad required (model ${model} detected)`, false);
+        setStatus('LCD pad required (model ' + retmod + ' detected)', false);
         btnSign.disabled = true;
       }
     } else {
@@ -142,17 +142,22 @@ function finishSigning() {
   clearInterval(eventTmr);
   eventTmr = null;
 
+  // Show message on LCD
   LcdRefresh(0, 0, 0, LCD_W, LCD_H);
   LCDWriteString(0, 2, 20, 25, '9pt Arial', 15, 'Signature captured.');
-  cleanupLcd();
-  SetTabletState(0, tmr);
 
+  // Extract image WHILE tablet is still active
   SetImageXSize(500);
   SetImageYSize(100);
   GetSigImageB64(onImageReady);
 }
 
 function onImageReady(base64Str) {
+  // Cleanup AFTER image is captured
+  cleanupLcd();
+  SetTabletState(0, tmr);
+  tmr = null;
+
   sigImage.src = 'data:image/png;base64,' + base64Str;
   base64Output.value = base64Str;
   outputSection.style.display = 'block';
@@ -213,15 +218,18 @@ btnSign.addEventListener('click', startSigning);
 btnClear.addEventListener('click', clearSignature);
 
 // --- Page Dismissal ---
+// Match demo close(): Reset() handles full cleanup including LCD
 window.addEventListener('beforeunload', () => {
   try {
-    cleanupLcd();
     if (resetIsSupported && typeof Reset === 'function') {
       Reset();
     } else {
+      cleanupLcd();
       if (tmr) SetTabletState(0, tmr);
       ClearTablet();
     }
+    clearInterval(tmr);
+    clearInterval(eventTmr);
   } catch {
     // SigWeb may not be available
   }
