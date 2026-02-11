@@ -260,12 +260,10 @@ window.addEventListener('beforeunload', () => {
     } else {
       resetTablet();
     }
-    clearInterval(tmr);
-    clearInterval(eventTmr);
-  } catch {
-    // SigWeb may not be available
+  } catch (error) { 
+    console.warn('Error during cleanup:', error);
   }
 });
 
 // --- Init ---
-detectPad();
+setTimeout(detectPad, 500);
