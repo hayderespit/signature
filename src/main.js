@@ -60,7 +60,9 @@ function setStatus(text, connected) {
 }
 
 // --- Pad Detection ---
-function detectPad() {
+function detectPad(retriesLeft) {
+  if (retriesLeft === undefined) retriesLeft = 3;
+
   try {
     if (typeof IsSigWebInstalled === 'function' && IsSigWebInstalled()) {
       resetIsSupported = !isOlderVersion('1.6.4.0', GetSigWebVersion());
@@ -68,7 +70,14 @@ function detectPad() {
       SetTabletState(1);
       var retmod = TabletModelNumber();
       SetTabletState(0);
-      console.log('SigWeb tablet model (raw):', retmod, typeof retmod);
+      console.log('SigWeb tablet model (raw):', retmod, typeof retmod, 'attempt:', 4 - retriesLeft);
+
+      // SigWeb returns "" on 400 errors — retry if result is falsy
+      if (!retmod && retriesLeft > 0) {
+        setTimeout(function () { detectPad(retriesLeft - 1); }, 500);
+        return;
+      }
+
       isLcdPad = (retmod == 11 || retmod == 12 || retmod == 15);
 
       if (isLcdPad) {
@@ -83,8 +92,12 @@ function detectPad() {
       btnSign.disabled = true;
     }
   } catch {
-    setStatus('SigWeb Not Detected', false);
-    btnSign.disabled = true;
+    if (retriesLeft > 0) {
+      setTimeout(function () { detectPad(retriesLeft - 1); }, 500);
+    } else {
+      setStatus('SigWeb Not Detected', false);
+      btnSign.disabled = true;
+    }
   }
 }
 
@@ -266,4 +279,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // --- Init ---
+try {
+  if (typeof Reset === 'function') Reset();
+} catch { }
 setTimeout(detectPad, 500);
